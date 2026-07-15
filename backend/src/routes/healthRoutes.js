@@ -10,7 +10,9 @@ router.get('/', async (req, res) => {
   try {
     const pong = await redis.ping();
     redisState = pong === 'PONG' ? 'up' : 'down';
-  } catch (e) {}
+  } catch (e) {
+    // Ignore redis connection issue
+  }
 
   res.json({
     status: 'ok',
