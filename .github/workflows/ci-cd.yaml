@@ -1,0 +1,102 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Lint Backend
+        run: |
+          cd backend
+          npm install
+          npm run lint
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Lint Worker
+        run: |
+          cd worker
+          pip install flake8
+          flake8 .
+
+  build-and-push:
+    needs: lint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build and Push Backend
+        uses: docker/build-push-action@v5
+        with:
+          context: ./backend
+          push: true
+          tags: |
+            ${{ secrets.DOCKERHUB_USERNAME }}/ai-task-backend:latest
+            ${{ secrets.DOCKERHUB_USERNAME }}/ai-task-backend:${{ github.sha }}
+
+      - name: Build and Push Worker
+        uses: docker/build-push-action@v5
+        with:
+          context: ./worker
+          push: true
+          tags: |
+            ${{ secrets.DOCKERHUB_USERNAME }}/ai-task-worker:latest
+            ${{ secrets.DOCKERHUB_USERNAME }}/ai-task-worker:${{ github.sha }}
+
+      - name: Build and Push Frontend
+        uses: docker/build-push-action@v5
+        with:
+          context: ./frontend
+          push: true
+          tags: |
+            ${{ secrets.DOCKERHUB_USERNAME }}/ai-task-frontend:latest
+            ${{ secrets.DOCKERHUB_USERNAME }}/ai-task-frontend:${{ github.sha }}
+
+  update-manifests:
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Infrastructure Repo
+        uses: actions/checkout@v4
+        with:
+          repository: anshul0931/ai-task-platform-infra
+          token: ${{ secrets.INFRA_REPO_PAT }}
+          path: infra-repo
+
+      - name: Update Image Tags in Manifests
+        run: |
+          cd infra-repo
+          sed -i "s|image: anshul0931/ai-task-backend:.*|image: ${{ secrets.DOCKERHUB_USERNAME }}/ai-task-backend:${{ github.sha }}|g" k8s/05-backend.yaml
+          sed -i "s|image: anshul0931/ai-task-worker:.*|image: ${{ secrets.DOCKERHUB_USERNAME }}/ai-task-worker:${{ github.sha }}|g" k8s/06-worker.yaml
+          sed -i "s|image: anshul0931/ai-task-frontend:.*|image: ${{ secrets.DOCKERHUB_USERNAME }}/ai-task-frontend:${{ github.sha }}|g" k8s/07-frontend.yaml
+
+      - name: Commit and Push Changes
+        run: |
+          cd infra-repo
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git add k8s/
+          git diff-index --quiet HEAD || git commit -m "Update image tags to ${{ github.sha }} [skip ci]"
+          git push origin main
